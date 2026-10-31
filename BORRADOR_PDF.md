@@ -3,11 +3,11 @@
 
 **Materia**: Bases de Datos I  
 **Carrera**: Tecnicatura Universitaria en Programación (TUP)  
-**Comisión**: C2 (Todos de comisión 2)  
-**Grupos**: Alejandro y Gabriel (G03), Josue (G12)  
+**Comisión**: C2  
+**Grupos**: Alejandro Fernández y Gabriel Di Lorenzo, comisión 2 grupo 3 (C2-3); Josue Gallardo, comisión 2 grupo 12 (C2-12)  
 **Integrantes**: 
-- Alejandro Fernández (M26 C2-03)
-- Gabriel Di Lorenzo (M26 C2-03)
+- Alejandro Fernández (M26 · C2-3)
+- Gabriel Di Lorenzo (M26 · C2-3)
 - Josue Gallardo (C2-12)  
 **Fecha**: Octubre 2026
 
