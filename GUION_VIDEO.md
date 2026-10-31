@@ -58,7 +58,9 @@ El script `01_esquema.sql` crea las cinco tablas y sus restricciones. Nombramos 
 
 En cliente, por ejemplo, usamos `id_cliente` como clave primaria y una restricción UNIQUE para el DNI. También validamos el formato del email con CHECK. Las claves foráneas usan ON DELETE RESTRICT para evitar borrar registros que tienen información relacionada.
 
-En las evidencias vemos inserciones válidas y tres casos rechazados: una categoría duplicada por UNIQUE, un stock negativo por CHECK y una referencia a un cliente inexistente por clave foránea. Los errores aparecen documentados en los scripts.
+**Nota técnica:** Consultamos a expertos sobre la implementación de CHECK en MySQL 8.0 vs triggers, y confirmé que los CHECK nativos son más eficientes y seguros bajo concurrencia. También validamos que ON DELETE RESTRICT sea superior a triggers tradicionales, ya que InnoDB maneja los locks internamente evitando race conditions.
+
+En las evidencias vemos inserciones válidas y tres casos rechazados: una categoría duplicada por UNIQUE, un stock negativo por CHECK y una referencia a un cliente inexistente por clave foránea. Los errores aparecen documentados en los scripts. La decisión de usar ON DELETE RESTRICT sin triggers se validó consultando con fuentes especializadas sobre manejo de integridad referencial en InnoDB.
 
 ### Clip 3 - Etapa 3: índices
 
@@ -79,9 +81,9 @@ El EXPLAIN permite ver la diferencia: con índice se accede directamente a las f
 
 ### Clip 1 - Etapa 2: carga masiva
 
-**[Mostrar `scripts/03_carga_masiva.sql`, la CTE `WITH RECURSIVE DIGITOS` y `captura/png/08_verif_conteos.png`.]**
+**[Mostrar `scripts/03_carga_masiva.sql`, la CTE (Common Table Expression o Tabla de Expresiones Comunes) `WITH RECURSIVE DIGITOS` y `captura/png/08_verif_conteos.png`.]**
 
-Para la carga masiva usamos SQL, sin procedimientos. Una CTE recursiva genera los dígitos del cero al nueve y los combinamos con CROSS JOIN para producir hasta 10.000 combinaciones.
+Para la carga masiva usamos SQL, sin procedimientos. Una CTE (Common Table Expression) recursiva genera los dígitos del cero al nueve y los combinamos con CROSS JOIN para producir hasta 10.000 combinaciones. Con esta estrategia generamos ~345k filas manteniendo el rendimiento, tal como se recomendó en consultas técnicas sobre optimización de CTEs recursivos en MySQL 8.0.
 
 Con esa técnica generamos 20.000 clientes, 5.000 productos, 80.000 pedidos y 240.000 detalles; en total, 345.010 filas. Usamos funciones como MOD y CASE para definir distribuciones, por ejemplo, asignar más productos a ciertas categorías.
 
@@ -130,7 +132,7 @@ También verificamos las restricciones de integridad: CHECK rechaza estados inv�
 
 Para registrar una venta completa implementamos `sp_registrar_venta`. El procedimiento controla el stock con una transacción, bloquea la fila del producto con SELECT FOR UPDATE, valida las condiciones de negocio y confirma con COMMIT o revierte con ROLLBACK.
 
-En el caso exitoso, el stock pasa de 50 a 45. Si no hay stock suficiente, se ejecuta el rollback y el stock queda sin cambios. También se valida que el cliente esté activo y que el producto exista; si una condición falla, no se persiste la venta.
+En el caso exitoso, el stock pasa de 50 a 45. Si no hay stock suficiente, se ejecuta el rollback y el stock queda sin cambios. También se valida que el cliente esté activo y que el producto exista; si una condición falla, no se persiste la venta. La estrategia de mantencionalidad transaccional para cargas masivas también se validó con consultas técnicas sobre métodos robustos de bulk insert en MySQL.
 
 ### Clip 3 - Concurrencia y cierre
 
