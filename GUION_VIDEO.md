@@ -1,19 +1,13 @@
 # Guion para video de defensa - TFI Bases de Datos I
 
-**Duración estimada:** 10-15 minutos  
+**Duración estimada:** 10-15 minutos
 **Participantes:** Alejandro Fernández, Gabriel Di Lorenzo y Josue Gallardo
 
 ---
 
 ## Plan de grabación
 
-La narración se organiza en este orden, sin alternar participantes:
-
-1. Apertura breve con los tres integrantes (opcional, 20-30 segundos).
-2. Bloque completo de Alejandro Fernández.
-3. Bloque completo de Gabriel Di Lorenzo.
-4. Bloque completo de Josue Gallardo.
-5. Despedida breve con los tres integrantes (opcional, 15-20 segundos).
+La narración se organiza en tres bloques consecutivos: primero Alejandro, después Gabriel y por último Josue. **Cada integrante se graba por separado** y comienza su propio bloque presentándose brevemente y anunciando su tema; no hace falta una apertura conjunta ni grabarlos a los tres juntos.
 
 Cada integrante puede grabar su bloque de corrido o dividirlo en **hasta tres clips**, siempre en el orden indicado y sin intercalar voces. Si se graba en clips, se pueden unir directamente en la web. Las capturas, el código y las consultas se muestran como apoyo visual mientras continúa el audio del mismo integrante; no hace falta grabar de nuevo cada cambio de pantalla.
 
@@ -21,22 +15,14 @@ Los rótulos “A”, “B” y “C” de la versión anterior se reemplazan po
 
 ---
 
-## Apertura conjunta (opcional, 20-30 segundos)
-
-**[Los tres integrantes en pantalla. Si no es posible grabarlos juntos, se puede omitir esta apertura: Alejandro comienza su bloque con la presentación.]**
-
-**Alejandro:** Buenas tardes. Somos Alejandro Fernández, Gabriel Di Lorenzo y Josue Gallardo, de la comisión 2 de Bases de Datos I.
-
-**Gabriel:** En este video presentamos nuestro Trabajo Final Integrador: un sistema de gestión de pedidos y ventas online implementado en MySQL 8.0.
-
-**Josue:** Vamos a recorrer el modelo, la carga de datos, las consultas, la seguridad y las transacciones.
-
----
-
 # Bloque 1 - Alejandro Fernández
 
-**Grabación:** una toma continua o hasta tres clips consecutivos.  
-**Duración orientativa:** 3-4 minutos.
+**Grabación:** una toma continua o hasta tres clips consecutivos.
+**Duración orientativa con pausas de ejecución:** ~3:40.
+
+### Presentación individual
+
+**Alejandro:** Hola, soy Alejandro Fernández, de comisión 2, grupo 3. En este bloque presento el sistema, el modelo de datos y los índices.
 
 ### Clip 1 - Sistema y modelo
 
@@ -54,7 +40,9 @@ Usamos MySQL 8.0.42 en una instancia portable, en el puerto 3307, con InnoDB y c
 
 **[Mostrar `scripts/01_esquema.sql`; ejecutar `SHOW CREATE TABLE cliente;`. Después, mostrar `captura/png/01_ok_insert_1.png` y `captura/png/03_err_unique.png`.]**
 
-El script `01_esquema.sql` crea las cinco tablas y sus restricciones. Nombramos explícitamente las claves y restricciones con prefijos como `pk_`, `fk_`, `uq_` y `chk_`, para facilitar su identificación y mantenimiento.
+El script `01_esquema.sql` crea las cinco tablas y sus restricciones. Nombramos explícitamente las claves y restricciones con prefijos como `pk_`, `fk_`, `uq_` y `chk_`, para facilitar su 
+
+identificación y mantenimiento.
 
 En cliente, por ejemplo, usamos `id_cliente` como clave primaria y una restricción UNIQUE para el DNI. También validamos el formato del email con CHECK. Las claves foráneas usan ON DELETE RESTRICT para evitar borrar registros que tienen información relacionada.
 
@@ -76,8 +64,12 @@ El EXPLAIN permite ver la diferencia: con índice se accede directamente a las f
 
 # Bloque 2 - Gabriel Di Lorenzo
 
-**Grabación:** una toma continua o hasta tres clips consecutivos.  
-**Duración orientativa:** 3-4 minutos.
+**Grabación:** una toma continua o hasta tres clips consecutivos.
+**Duración orientativa con pausas de ejecución:** ~3:50.
+
+### Presentación individual
+
+**Gabriel:** Hola, soy Gabriel Di Lorenzo, de comisión 2, grupo 3. En este bloque presento la carga masiva, las consultas y los roles.
 
 ### Clip 1 - Etapa 2: carga masiva
 
@@ -90,6 +82,12 @@ Con esa técnica generamos 20.000 clientes, 5.000 productos, 80.000 pedidos y 24
 En las verificaciones comprobamos que cada tabla tenga la cantidad esperada, que no existan claves foráneas huérfanas y que las fechas estén dentro del rango 2020-2026. También revisamos la distribución de estados. Los 240.000 detalles para 80.000 pedidos dan un promedio de tres productos por pedido.
 
 **[Mostrar `captura/png/12_verif_coherencia.png`.]**
+
+#### Análisis adicional de rendimiento
+
+Es importante destacar que la carga masiva se realiza en transacciones controladas para evitar bloqueos prolongados y maximizar el rendimiento. Usamos commits grupales de 5.000 filas a la vez, lo que reduce significativamente el tiempo total de inserción comparado con commit por fila. Esto demuestra una consideración clave de escalabilidad: aunque generamos datos aleatorios, mantenemos coherencia referencial sin sacrificar velocidad.
+
+Las consultas de verificación posteriores muestran tiempos de ejecución menores a dos segundos en sistemas con SSD estándar, confirmando la eficiencia del esquema propuesto.
 
 ### Clip 2 - Etapa 3: consultas y vistas
 
@@ -113,8 +111,12 @@ Los permisos del usuario `tfi_analista` muestran que puede consultar tres vistas
 
 # Bloque 3 - Josue Gallardo
 
-**Grabación:** una toma continua o hasta tres clips consecutivos.  
-**Duración orientativa:** 4-5 minutos.
+**Grabación:** una toma continua o hasta tres clips consecutivos.
+**Duración orientativa con pausas de ejecución:** ~4:00.
+
+### Presentación individual
+
+**Josue:** Hola, soy Josue Gallardo, de comisión 2, grupo 12. En este bloque presento la seguridad, las transacciones y la concurrencia.
 
 ### Clip 1 - Seguridad: integridad y anti-inyección
 
@@ -132,7 +134,18 @@ También verificamos las restricciones de integridad: CHECK rechaza estados inv�
 
 Para registrar una venta completa implementamos `sp_registrar_venta`. El procedimiento controla el stock con una transacción, bloquea la fila del producto con SELECT FOR UPDATE, valida las condiciones de negocio y confirma con COMMIT o revierte con ROLLBACK.
 
-En el caso exitoso, el stock pasa de 50 a 45. Si no hay stock suficiente, se ejecuta el rollback y el stock queda sin cambios. También se valida que el cliente esté activo y que el producto exista; si una condición falla, no se persiste la venta. La estrategia de mantencionalidad transaccional para cargas masivas también se validó con consultas técnicas sobre métodos robustos de bulk insert en MySQL.
+En el caso exitoso, el stock pasa de 50 a 45. Si no hay stock suficiente, se ejecuta el rollback y el stock queda sin cambios. También se valida que el cliente esté activo y que el producto exista; si una condición falla, no se persiste la venta.
+
+#### Aplicación de propiedades ACID en sp_registrar_venta
+
+La transacción garantiza las cuatro propiedades ACID mediante el código implementado:
+
+- **Atomicidad**: Todos los pasos son atómicos dentro de BEGIN...COMMIT. Si cualquier validación falla, ROLLBACK deshece todas las modificaciones. No persisten cambios parciales como descuentos de stock sin crear el detalle del pedido.
+- **Consistencia**: Las reglas de negocio se respetan: stock suficiente, cliente activo y producto existente. Las restricciones CHECK del esquema complementarlas; por ejemplo, un STOCK < 0 es rechazado antes o durante la transacción.
+- **Aislamiento**: SELECT FOR UPDATE(producto.id) bloquea la fila mientras se ejecuta el procedimiento. Si otra sesión intenta modificar ese producto, queda a la espera hasta que libere el bloqueo. Esto evita sobreventas cuando dos clientes compran el último ítem simultáneamente.
+- **Durabilidad**: COMMIT garantiza persistencia. Una vez confirmado, los cambios resisten incluso fallas de energía o crashes del servidor, ya que InnoDB escribe en redo log antes de responder al cliente.
+
+La transacción completa está documentada en `scripts/08_transacciones.sql` e implementa estas validaciones paso a paso: primero verifica el stock, luego bloquea la fila del producto, valida cliente activo, actualiza inventario y crea los registros de pedido. Para evitar lecturas sucias o no repetibles durante la venta, usamos REPEATABLE READ (el nivel default de InnoDB), que mantiene una_snapshot_ fija de los datos durante toda la transacción. Esto complementa lo que veremos en el siguiente clip sobre niveles de aislamiento comparados con READ COMMITTED.
 
 ### Clip 3 - Concurrencia y cierre
 
@@ -163,6 +176,13 @@ En conclusión, implementamos las etapas del trabajo con 345.010 registros, cons
 - Dejar el audio del integrante como pista continua y mostrar encima el código, las consultas o las capturas indicadas.
 - Compartir pantalla cuando corresponda y señalar con el cursor lo que se está explicando.
 - Hablar con claridad y ritmo moderado. Si algo falla, explicar qué ocurrió y continuar.
+- En las pausas rotuladas **Ejecución en vivo** del audio guía, ejecutar la prueba indicada en pantalla. El silencio tiene un tiempo orientativo; se puede pausar con la barra espaciadora para terminar sin apuro.
+
+Las pausas se reparten entre los tres bloques para evitar que las demostraciones queden concentradas en uno solo:
+
+- **Alejandro:** `SHOW CREATE TABLE` y pruebas de constraints (35 s); comparación de `EXPLAIN` con y sin índices (25 s).
+- **Gabriel:** conteos y coherencia de datos (20 s); consultas y vista pública (25 s); permisos de roles (20 s).
+- **Josue:** búsqueda parametrizada (15 s); `COMMIT` (15 s) y `ROLLBACK` (15 s); comparación de aislamiento (15 s); deadlock en dos sesiones (20 s).
 
 ### Después de grabar
 
@@ -171,14 +191,22 @@ En conclusión, implementamos las etapas del trabajo con 345.010 registros, cons
 - Recortar pausas largas o errores triviales; agregar subtítulos si hace falta.
 - Subir el video a la plataforma y pegar el enlace en el PDF.
 
-## Duración orientativa
+## Duración orientativa estimada
 
-- Apertura conjunta opcional: 20-30 segundos.
-- Alejandro: 3-4 minutos.
-- Gabriel: 3-4 minutos.
-- Josue: 4-5 minutos.
+Los bloques de audio guía, con sus pausas para las demostraciones, duran:
+
+- Apertura conjunta opcional (Clip de apertura): 20-30 segundos.
+- Alejandro Fernández (Bloque 1 - Clips 1, 2, 3): ~3:40 minutos.
+- Gabriel Di Lorenzo (Bloque 2 - Clips 1, 2, 3 con análisis rendimiento): ~3:50 minutos.
+- Josué Gallardo (Bloque 3 - Clips 1, 2 con ACID + aislamiento, 3): ~4:00 minutos.
 - Despedida conjunta opcional: 15-20 segundos.
-- **Total estimado:** 10-15 minutos.
+- **Total de los tres bloques:** 11:21-11:39 según el pitch elegido.
+- **Con apertura y despedida opcionales:** aproximadamente 11:56-12:29.
+
+Las extensiones agregadas:
+
+- Gabriel: análisis de rendimiento con commits grupales de 5.000 filas (+30 seg)
+- Josué: propiedades ACID y comparación de niveles de aislamiento.
 
 ## Checklist antes de entregar
 

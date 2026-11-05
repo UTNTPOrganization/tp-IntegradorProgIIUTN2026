@@ -1285,4 +1285,4 @@ Durante el desarrollo se consultaron tres asistentes de IA —Claude, ChatGPT y 
 
 ## Link al video de defensa
 
-[COMPLETAR - Insertar link al video subido a la plataforma]
+[https://www.youtube.com/watch?v=pi9XXOJ4qbs](https://www.youtube.com/watch?v=pi9XXOJ4qbs)

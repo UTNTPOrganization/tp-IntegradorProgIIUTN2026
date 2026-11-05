@@ -217,7 +217,13 @@ def _envolver_imagenes(html):
         alt, src = m.group(1), m.group(2)
         ruta = Path(src)
         if not ruta.is_absolute():
-            ruta = (RUTA_PROYECTO / ruta)
+            ruta = RUTA_PROYECTO / ruta
+            if not ruta.exists():
+                # Las capturas viven en la raíz del proyecto; Entrega/ es solo
+                # la carpeta de salida del PDF.
+                alternativa = RUTA_PROYECTO.parent / src
+                if alternativa.exists():
+                    ruta = alternativa
         if not ruta.exists():
             return f'<p>[Imagen no encontrada: {src}]</p>'
         return (
