@@ -252,58 +252,60 @@ VALUES (80001, 99999, CURRENT_TIMESTAMP, 'PENDIENTE');
 
 ### 3.1 Mecanismo de generación con SQL puro
 
-La carga masiva de 345.010 registros se realiza utilizando únicamente SQL, sin procedimientos almacenados ni lógica externa. El mecanismo se basa en:
+La carga masiva de 345.010 registros se realiza únicamente con SQL, sin procedimientos almacenados ni lógica externa. El script `03_carga_masiva.sql` se apoya en una tabla de números generada con una CTE recursiva, un producto cartesiano controlado y una derivación determinista de atributos.
 
-#### 3.1.1 CTE recursiva para series numéricas
+#### 3.1.1 Tabla de números con CTE recursiva
 
 ```sql
-WITH RECURSIVE DIGITOS AS (
-    SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
-    SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL
-    SELECT 8 UNION ALL SELECT 9
+SET SESSION cte_max_recursion_depth = 1000000;
+
+DROP TABLE IF EXISTS nums;
+CREATE TABLE nums (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+
+INSERT INTO nums (n)
+WITH RECURSIVE serie AS (
+    SELECT 1 AS n
+    UNION ALL
+    SELECT n + 1 FROM serie WHERE n < 1000
 )
+SELECT n FROM serie;
 ```
 
-Esta CTE genera los dígitos 0-9, que se combinan mediante `CROSS JOIN` para producir hasta 10.000 combinaciones (10⁴).
+La CTE genera la serie 1..1000 y se materializa en la tabla `nums`. Se usa una tabla común y no `TEMPORARY` porque MySQL no permite referenciar dos veces la misma tabla temporal en una misma consulta. `nums` se elimina al final del script para que no forme parte del modelo.
 
 #### 3.1.2 Producto cartesiano controlado
 
-Para generar las 20.000 filas de clientes:
+Cada bloque combina `nums` consigo misma y acota cada factor al rango necesario:
+
+| Tabla | Combinación | Filas generadas |
+|---|---|---|
+| `cliente` | 200 × 100 | 20.000 |
+| `producto` | 100 × 50 | 5.000 |
+| `pedido` | 400 × 200 | 80.000 |
+| `detalle_pedido` | 3 líneas por pedido | 240.000 |
+
+El patrón de generación es siempre el mismo; para clientes:
 
 ```sql
-WITH DIGITOS AS (...) -- 0-9
-SELECT 
-    CONCAT('1000', d1, d2, d3, d4) AS dni,
-    ...
-FROM DIGITOS d1, DIGITOS d2, DIGITOS d3, DIGITOS d4
-LIMIT 20000;
+SELECT (a.n - 1) * 100 + b.n AS k
+FROM nums a
+JOIN nums b ON b.n <= 100
+WHERE a.n <= 200;
 ```
 
-#### 3.1.3 Distribución sesgada con MOD y CASE
+#### 3.1.3 Derivación determinista de atributos
 
-Para simular datos realistas, se usan funciones de distribución:
+No se usa `RAND()`: todos los valores se derivan del identificador `k` con `MOD`, `ELT`, `LPAD`, `DATE_ADD` y `TIMESTAMPADD`. De ese modo, dos ejecuciones producen exactamente las mismas filas y los conteos de verificación son reproducibles.
 
-```sql
--- Distribución de categorías sesgada (más productos en algunas categorías)
-id_categoria = 1 + (id_producto % 10)
+- **cliente**: `dni = LPAD(10000000 + MOD(k * 7919, 89000000), 8, '0')`; nombre y apellido con `ELT`; email `nombre.apellido{k}@correo.test`; alta entre 2021-01-01 y 2024-12-31 con `DATE_ADD('2021-01-01', INTERVAL MOD(k * 37, 1460) DAY)`; `activo = (MOD(k, 13) <> 0)`.
+- **producto**: `sku = CONCAT('SKU-', LPAD(k, 5, '0'))`; categoría `1 + MOD(k * 3, 10)`; precio `ROUND(1000 + MOD(k * 137, 900000) / 100, 2)`; stock `MOD(k * 29, 500) + 10`.
+- **pedido**: fecha entre 2023-01-01 y 2024-12-31 con `TIMESTAMPADD(DAY, MOD(k * 17, 730), '2023-01-01 08:00:00')` y hora `MOD(k * 13, 24)`. El 75% de los pedidos se reparte entre los 20.000 clientes y el 25% se concentra en 2.000 clientes recurrentes.
+- **estado del pedido**: si la fecha es `>= '2024-10-01'`, se usa `ELT(1 + MOD(k, 3), 'PENDIENTE', 'PAGADO', 'ENVIADO')`; si no, `CANCELADO` cuando `MOD(k, 37) = 0` y `ENTREGADO` en el resto.
+- **detalle_pedido**: 3 líneas por pedido; el producto se calcula con `1 + MOD(id_pedido * 7 + linea * 13 + FLOOR(id_pedido / 5000) * 11, 5000)` y la cantidad con `1 + MOD(id_pedido * 3 + linea, 5)`.
 
--- Distribución de estados de pedido
-estado = CASE (id_pedido % 5)
-    WHEN 0 THEN 'PENDIENTE'
-    WHEN 1 THEN 'PAGADO'
-    WHEN 2 THEN 'ENVIADO'
-    WHEN 3 THEN 'ENTREGADO'
-    ELSE 'CANCELADO'
-END
-```
+#### 3.1.4 Ejecución y atomicidad
 
-#### 3.1.4 Fechas aleatorias en rango
-
-Para generar fechas entre 2020-01-01 y 2026-10-30:
-
-```sql
-DATE_ADD('2020-01-01', INTERVAL FLOOR(RAND() * 2500) DAY)
-```
+El script no envuelve los cuatro `INSERT ... SELECT` en una única transacción: cada sentencia se ejecuta en autocommit. La integridad se garantiza por el orden de carga (catálogos → clientes y productos → pedidos → detalle) y por las claves foráneas. Si un bloque falla, se corrige y se vuelve a ejecutar la secuencia completa desde `01_esquema.sql`, que recrea la base. Las verificaciones V1–V5 de la sección 3.3 comprueban que la carga quedó completa y consistente.
 
 ### 3.2 Volúmenes generados
 
@@ -322,88 +324,102 @@ DATE_ADD('2020-01-01', INTERVAL FLOOR(RAND() * 2500) DAY)
 
 ![Catálogos](capturas/png/07_catalogos.png)
 
-Las 10 categorías base se cargan manualmente para asegurar nombres descriptivos.
+Las 10 categorías base se cargan manualmente en `02_catalogos.sql` para asegurar nombres descriptivos: Notebooks, Monitores, Periféricos, Almacenamiento, Redes, Audio, Impresión, Cámaras, Componentes y Accesorios.
 
-#### 3.3.2 Verificación de conteos
+#### 3.3.2 Verificación de conteos (V1)
 
 ![Verificación de conteos](capturas/png/08_verif_conteos.png)
 
 ```sql
-SELECT 
-    'categoria' AS tabla, COUNT(*) AS filas FROM categoria
-UNION ALL SELECT 'cliente', COUNT(*) FROM cliente
-UNION ALL SELECT 'producto', COUNT(*) FROM producto
-UNION ALL SELECT 'pedido', COUNT(*) FROM pedido
-UNION ALL SELECT 'detalle_pedido', COUNT(*) FROM detalle_pedido;
+SELECT 'categoria'       AS tabla, COUNT(*) AS filas, '10'     AS planificado FROM categoria
+UNION ALL SELECT 'cliente',        COUNT(*), '20000'  FROM cliente
+UNION ALL SELECT 'producto',       COUNT(*), '5000'   FROM producto
+UNION ALL SELECT 'pedido',         COUNT(*), '80000'  FROM pedido
+UNION ALL SELECT 'detalle_pedido', COUNT(*), '240000' FROM detalle_pedido;
 ```
 
-Resultado: 345.010 filas totales (ver script `03_carga_masiva.sql` líneas finales).
+Resultado: 10 + 20.000 + 5.000 + 80.000 + 240.000 = **345.010 filas**, todas coincidentes con el volumen planificado.
 
-#### 3.3.3 Verificación de FKs huérfanas
+#### 3.3.3 Verificación de FKs huérfanas (V2)
 
 ![FKs huérfanas](capturas/png/09_verif_fk_huerfanas.png)
 
 ```sql
--- Verificar que no hay detalles sin pedido
-SELECT COUNT(*) FROM detalle_pedido d 
-LEFT JOIN pedido p ON d.id_pedido = p.id_pedido 
-WHERE p.id_pedido IS NULL;  -- Resultado: 0
-
--- Verificar que no hay detalles sin producto
-SELECT COUNT(*) FROM detalle_pedido d 
-LEFT JOIN producto p ON d.id_producto = p.id_producto 
-WHERE p.id_producto IS NULL;  -- Resultado: 0
+SELECT 'pedido -> cliente' AS relacion, COUNT(*) AS huerfanas
+FROM pedido p LEFT JOIN cliente c ON c.id_cliente = p.id_cliente
+WHERE c.id_cliente IS NULL
+UNION ALL
+SELECT 'detalle -> pedido', COUNT(*)
+FROM detalle_pedido d LEFT JOIN pedido p ON p.id_pedido = d.id_pedido
+WHERE p.id_pedido IS NULL
+UNION ALL
+SELECT 'detalle -> producto', COUNT(*)
+FROM detalle_pedido d LEFT JOIN producto pr ON pr.id_producto = d.id_producto
+WHERE pr.id_producto IS NULL
+UNION ALL
+SELECT 'producto -> categoria', COUNT(*)
+FROM producto pr LEFT JOIN categoria c ON c.id_categoria = pr.id_categoria
+WHERE c.id_categoria IS NULL;
 ```
 
-#### 3.3.4 Verificación de distribución de estados
+Resultado: 0 huérfanas en las cuatro relaciones.
+
+#### 3.3.4 Verificación de distribución de estados (V3)
 
 ![Distribución de estados](capturas/png/10_verif_distribucion.png)
 
 ```sql
-SELECT estado, COUNT(*) AS cantidad, 
-       ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM pedido), 2) AS porcentaje
+SELECT estado,
+       COUNT(*) AS pedidos,
+       ROUND(100 * COUNT(*) / (SELECT COUNT(*) FROM pedido), 2) AS porcentaje
 FROM pedido
-GROUP BY estado;
+GROUP BY estado
+ORDER BY pedidos DESC;
 ```
 
-Los 5 estados se distribuyen aproximadamente 20% cada uno (distribución uniforme por diseño).
+Resultado real: `ENTREGADO` 68.096 (85,12%), `PAGADO` 3.341 (4,18%), `ENVIADO` 3.335 (4,17%), `PENDIENTE` 3.333 (4,17%) y `CANCELADO` 1.895 (2,37%). La distribución no es uniforme: reproduce el sesgo de negocio definido en la carga (la mayoría de los pedidos históricos ya están entregados).
 
-#### 3.3.5 Verificación de rangos de fechas
+#### 3.3.5 Verificación de rangos (V4)
 
 ![Rangos de fechas](capturas/png/11_verif_rangos.png)
 
 ```sql
-SELECT 
-    MIN(fecha) AS fecha_minima,
-    MAX(fecha) AS fecha_maxima,
-    DATEDIFF(MAX(fecha), MIN(fecha)) AS dias_rango
-FROM pedido;
+SELECT
+    (SELECT MIN(fecha) FROM pedido)                AS pedido_fecha_min,
+    (SELECT MAX(fecha) FROM pedido)                AS pedido_fecha_max,
+    (SELECT MIN(precio) FROM producto)             AS producto_precio_min,
+    (SELECT MAX(precio) FROM producto)             AS producto_precio_max,
+    (SELECT MIN(stock) FROM producto)              AS producto_stock_min,
+    (SELECT MIN(cantidad) FROM detalle_pedido)     AS detalle_cantidad_min,
+    (SELECT MAX(cantidad) FROM detalle_pedido)     AS detalle_cantidad_max;
 ```
 
-Resultado: fechas entre 2020-01-01 y 2026-10-30 (aprox. 2500 días).
+Resultado: fechas entre 2023-01-01 08:00:00 y 2024-12-31 07:00:00; precios entre 1.001,37 y 7.850,00; stock mínimo 10; cantidades entre 1 y 5.
 
-#### 3.3.6 Verificación de coherencia cabecera-detalle
+#### 3.3.6 Verificación de coherencia cabecera-detalle (V5)
 
 ![Coherencia](capturas/png/12_verif_coherencia.png)
 
 ```sql
--- Suma de cantidades por pedido debe ser coherente
-SELECT 
-    COUNT(DISTINCT id_pedido) AS pedidos,
-    SUM(cantidad) AS total_unidades,
-    AVG(cantidad) AS promedio_unidades_por_detalle
-FROM detalle_pedido;
+SELECT
+    (SELECT COUNT(*) FROM pedido p
+      WHERE NOT EXISTS (SELECT 1 FROM detalle_pedido d WHERE d.id_pedido = p.id_pedido)) AS pedidos_sin_lineas,
+    (SELECT COUNT(*) FROM detalle_pedido d
+      WHERE d.precio_unitario <> (SELECT precio FROM producto pr WHERE pr.id_producto = d.id_producto)
+        AND d.id_pedido <= 1000)                                                        AS precios_incoherentes_muestra,
+    (SELECT ROUND(SUM(cantidad * precio_unitario), 2) FROM detalle_pedido)              AS facturacion_total;
 ```
 
-Resultado: 80.000 pedidos, 240.000 detalles, promedio 3 productos por pedido.
+Resultado: 0 pedidos sin líneas, 0 precios incoherentes en la muestra y una facturación total de 3.186.488.520,08.
+
+#### 3.3.7 Limpieza de la tabla auxiliar
+
+Al finalizar las verificaciones, el script ejecuta `DROP TABLE IF EXISTS nums;` para que la tabla de series no forme parte del modelo entregado.
 
 ### 3.4 Referencia a scripts
 
 - Catálogos semilla: `scripts/02_catalogos.sql`
-- Carga masiva: `scripts/03_carga_masiva.sql`
-- Verificaciones: últimas 30 líneas de `03_carga_masiva.sql`
-
----
+- Carga masiva y verificaciones: `scripts/03_carga_masiva.sql`
 
 ## 4. Etapa 3 — Consultas e índices
 
@@ -918,62 +934,131 @@ Resultado: 5 filas retornadas (acceso exitoso)
 
 #### 6.1.1 sp_registrar_venta
 
-El procedimiento `sp_registrar_venta` implementa una transacción atómica para registrar una venta con control de stock:
+El procedimiento `sp_registrar_venta` registra una venta de **un producto** por llamada. Recibe el cliente, el producto y la cantidad, y devuelve por parámetros de salida el pedido creado, la cantidad de intentos y el resultado. El código completo, tal como está en `scripts/08_transacciones.sql`, es:
 
 ```sql
+USE tfi_pedidos;
+
+CREATE TABLE IF NOT EXISTS log_transacciones (
+    id_log        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    fecha         DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    procedimiento VARCHAR(60)     NOT NULL,
+    nivel         ENUM('INFO','WARN','ERROR') NOT NULL,
+    mensaje       VARCHAR(255)    NOT NULL,
+    CONSTRAINT pk_log_transacciones PRIMARY KEY (id_log)
+) ENGINE=InnoDB;
+
+DROP PROCEDURE IF EXISTS sp_registrar_venta;
+DELIMITER //
 CREATE PROCEDURE sp_registrar_venta(
-    IN p_id_cliente INT,
-    IN p_items JSON  -- Formato: [{"id_producto":1,"cantidad":2},...]
+    IN  p_id_cliente  INT UNSIGNED,
+    IN  p_id_producto INT UNSIGNED,
+    IN  p_cantidad    INT,
+    OUT p_id_pedido   INT UNSIGNED,
+    OUT p_intentos    TINYINT,
+    OUT p_resultado   VARCHAR(255)
 )
 BEGIN
-    DECLARE v_id_pedido INT;
-    DECLARE v_stock_actual INT;
-    DECLARE v_precio DECIMAL(10,2);
-    DECLARE v_producto_valido INT;
-    DECLARE v_cliente_valido INT;
-    DECLARE v_continue INT DEFAULT 1;
-    DECLARE v_retries INT DEFAULT 0;
-    
-    -- Loop de retry ante deadlock (máximo 3 intentos)
-    WHILE v_continue = 1 AND v_retries < 3 DO
-        BEGIN
-            START TRANSACTION;
-            
-            -- Validar cliente
-            SELECT COUNT(*) INTO v_cliente_valido 
-            FROM cliente WHERE id_cliente = p_id_cliente AND activo = TRUE;
-            
-            IF v_cliente_valido = 0 THEN
-                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cliente inexistente o inactivo';
-            END IF;
-            
-            -- Procesar cada item
-            -- (lógica simplificada: iterar sobre JSON, validar stock, insertar pedido/detalle, actualizar stock)
-            
-            COMMIT;
-            SET v_continue = 0;  -- Éxito, salir del loop
-            
-        EXCEPTION
-            WHEN 1213 THEN  -- Deadlock
+    DECLARE v_intento  TINYINT      DEFAULT 0;
+    DECLARE v_ok       BOOLEAN      DEFAULT FALSE;
+    DECLARE v_deadlock BOOLEAN      DEFAULT FALSE;
+    DECLARE v_msg      VARCHAR(255) DEFAULT '';
+    DECLARE v_stock    INT;
+    DECLARE v_precio   DECIMAL(10,2);
+
+    SET p_id_pedido = NULL;
+
+    reintentos: WHILE v_intento < 3 AND NOT v_ok DO
+        SET v_intento  = v_intento + 1;
+        SET v_deadlock = FALSE;
+        SET v_msg      = '';
+
+        intento: BEGIN
+            -- Deadlock: InnoDB ya revirtio la transaccion completa.
+            DECLARE EXIT HANDLER FOR 1213
+            BEGIN
                 ROLLBACK;
-                SET v_retries = v_retries + 1;
-                -- Backoff: esperar 100ms antes de reintentar
-                DO SLEEP(0.1);
-        END;
-    END WHILE;
-    
-    IF v_retries >= 3 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error: deadlock persistente después de 3 reintentos';
+                SET v_deadlock = TRUE;
+                SET v_msg = 'Deadlock detectado (ERROR 1213)';
+            END;
+
+            -- Cualquier otro error SQL: revertir y registrar el mensaje.
+            DECLARE EXIT HANDLER FOR SQLEXCEPTION
+            BEGIN
+                GET DIAGNOSTICS CONDITION 1 v_msg = MESSAGE_TEXT;
+                ROLLBACK;
+            END;
+
+            START TRANSACTION;
+
+            SELECT stock, precio
+              INTO v_stock, v_precio
+              FROM producto
+             WHERE id_producto = p_id_producto
+               FOR UPDATE;
+
+            IF v_stock IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Producto inexistente';
+            END IF;
+
+            IF v_stock < p_cantidad THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Stock insuficiente';
+            END IF;
+
+            INSERT INTO pedido (id_cliente, fecha, estado)
+            VALUES (p_id_cliente, NOW(), 'PENDIENTE');
+            SET p_id_pedido = LAST_INSERT_ID();
+
+            INSERT INTO detalle_pedido (id_pedido, id_producto, cantidad, precio_unitario)
+            VALUES (p_id_pedido, p_id_producto, p_cantidad, v_precio);
+
+            UPDATE producto
+               SET stock = stock - p_cantidad
+             WHERE id_producto = p_id_producto;
+
+            COMMIT;
+            SET v_ok = TRUE;
+        END intento;
+
+        -- Solo se reintenta ante deadlock; un error de negocio es definitivo.
+        IF NOT v_ok AND NOT v_deadlock THEN
+            LEAVE reintentos;
+        END IF;
+
+        IF NOT v_ok AND v_deadlock AND v_intento < 3 THEN
+            INSERT INTO log_transacciones (procedimiento, nivel, mensaje)
+            VALUES ('sp_registrar_venta', 'WARN',
+                    CONCAT('Reintento ', v_intento, ' por deadlock (backoff ', v_intento * 50, ' ms)'));
+            DO SLEEP(v_intento * 0.05);
+        END IF;
+    END WHILE reintentos;
+
+    IF v_ok THEN
+        SET p_resultado = 'OK';
+        INSERT INTO log_transacciones (procedimiento, nivel, mensaje)
+        VALUES ('sp_registrar_venta', 'INFO',
+                CONCAT('Venta OK: pedido=', p_id_pedido, ' producto=', p_id_producto,
+                       ' cantidad=', p_cantidad, ' intentos=', v_intento));
+    ELSE
+        SET p_resultado = IF(v_deadlock, 'DEADLOCK_NO_RESUELTO',
+                             CONCAT('ERROR: ', LEFT(v_msg, 200)));
+        INSERT INTO log_transacciones (procedimiento, nivel, mensaje)
+        VALUES ('sp_registrar_venta', 'ERROR',
+                CONCAT('Venta fallida: ', v_msg, ' (intentos=', v_intento, ')'));
     END IF;
-END;
+
+    SET p_intentos = v_intento;
+END //
+DELIMITER ;
 ```
 
 **Características**:
-- `START TRANSACTION` / `COMMIT` / `ROLLBACK` explícitos
-- `SELECT ... FOR UPDATE` para lock exclusivo de filas de producto
-- Validaciones de negocio (cliente activo, producto existe, stock suficiente)
-- Retry automático ante deadlock (ERROR 1213)
-- Backoff exponencial entre reintentos
+- `START TRANSACTION` / `COMMIT` / `ROLLBACK` explícitos.
+- `SELECT ... FOR UPDATE` para bloquear la fila del producto y evitar sobreventa.
+- Validaciones de negocio: producto inexistente y stock insuficiente. La validez del cliente la garantiza la FK `fk_pedido_cliente`.
+- Registro de cada intento en `log_transacciones` (`INFO`, `WARN`, `ERROR`).
+- Retry automático **solo** ante deadlock (`ERROR 1213`): hasta 3 intentos, con backoff de 50 ms y 100 ms. Un error de negocio no se reintenta.
+- El procedimiento maneja un producto por llamada; para vender varios productos se invoca una vez por cada uno o se extiende la firma para recibir una tabla o un JSON.
 
 ### 6.2 Pruebas de transacción
 
@@ -982,50 +1067,56 @@ END;
 ![Estado inicial](capturas/png/46_tx_estado_inicial.png)
 
 ```sql
-SELECT id_producto, nombre, stock FROM producto WHERE id_producto IN (1, 2) LIMIT 2;
+SELECT id_producto, nombre, stock FROM producto WHERE id_producto = 10;
+SELECT MAX(id_pedido) AS ultimo_pedido FROM pedido;
 ```
 
-Resultado: productos con stock inicial (ej. 50 y 100 unidades).
+Resultado: producto 10 (`Parlante Neo`) con stock 300; último pedido 80.000.
 
 #### 6.2.2 COMMIT exitoso
 
 ![Commit](capturas/png/47_tx_commit.png)
 
 ```sql
-CALL sp_registrar_venta(1, '[{"id_producto":1,"cantidad":5}]');
+CALL sp_registrar_venta(1, 10, 2, @pedido, @intentos, @resultado);
+SELECT @pedido AS pedido_creado, @intentos AS intentos, @resultado AS resultado;
 ```
 
-Resultado: Transaction completed, stock actualizado de 50 a 45.
+Resultado: pedido 80.002, 1 intento, `OK`; se insertó la cabecera, la línea de detalle y el stock pasó de 300 a 298.
 
 #### 6.2.3 ROLLBACK por stock insuficiente
 
 ![Stock insuficiente](capturas/png/48_tx_stock_insuficiente.png)
 
 ```sql
-CALL sp_registrar_venta(1, '[{"id_producto":1,"cantidad":9999}]');
+CALL sp_registrar_venta(1, 10, 999999, @pedido2, @intentos2, @resultado2);
+SELECT @pedido2 AS pedido_creado, @intentos2 AS intentos, @resultado2 AS resultado;
+SELECT stock AS stock_intacto FROM producto WHERE id_producto = 10;
 ```
 
-Resultado: Error 'Stock insuficiente', ROLLBACK automático, stock sin cambios.
+Resultado: `pedido_creado = NULL`, 1 intento, `ERROR: Stock insuficiente`; el stock queda intacto en 298.
 
 #### 6.2.4 ROLLBACK por producto inexistente
 
 ![Producto inexistente](capturas/png/49_tx_producto_inexistente.png)
 
 ```sql
-CALL sp_registrar_venta(1, '[{"id_producto":99999,"cantidad":1}]');
+CALL sp_registrar_venta(1, 999999, 1, @pedido3, @intentos3, @resultado3);
+SELECT @pedido3 AS pedido_creado, @intentos3 AS intentos, @resultado3 AS resultado;
 ```
 
-Resultado: Error 'Producto inexistente', ROLLBACK automático.
+Resultado: `pedido_creado = NULL`, `ERROR: Producto inexistente`; ROLLBACK automático.
 
 #### 6.2.5 ROLLBACK por cliente inexistente
 
 ![Cliente inexistente](capturas/png/50_tx_cliente_inexistente.png)
 
 ```sql
-CALL sp_registrar_venta(99999, '[{"id_producto":1,"cantidad":1}]');
+CALL sp_registrar_venta(999999, 10, 1, @pedido4, @intentos4, @resultado4);
+SELECT @pedido4 AS pedido_creado, @intentos4 AS intentos, @resultado4 AS resultado;
 ```
 
-Resultado: Error 'Cliente inexistente o inactivo', ROLLBACK automático.
+Resultado: `pedido_creado = NULL`, `ERROR: Cannot add or update a child row: a foreign key constraint fails ...`; el `INSERT` en `pedido` viola `fk_pedido_cliente` y el `HANDLER` de `SQLEXCEPTION` hace ROLLBACK.
 
 #### 6.2.6 ROLLBACK manual
 
@@ -1033,23 +1124,29 @@ Resultado: Error 'Cliente inexistente o inactivo', ROLLBACK automático.
 
 ```sql
 START TRANSACTION;
-UPDATE producto SET stock = stock - 10 WHERE id_producto = 1;
--- ... alguna condición no se cumple ...
+UPDATE producto SET stock = stock - 5 WHERE id_producto = 10;
+SELECT stock AS stock_dentro_de_la_transaccion FROM producto WHERE id_producto = 10;
 ROLLBACK;
+SELECT stock AS stock_despues_del_rollback FROM producto WHERE id_producto = 10;
 ```
 
-Resultado: Stock sin cambios (rollback exitoso).
+Resultado: dentro de la transacción el stock es 293; después del ROLLBACK vuelve a 298.
 
 #### 6.2.7 Log de transacciones
 
 ![Log de transacciones](capturas/png/52_tx_log.png)
 
-El procedimiento registra en una tabla de log:
-- Timestamp
-- ID de pedido
-- ID de cliente
-- Estado (EXITOSO / FALLIDO)
-- Mensaje de error si aplica
+El procedimiento registra cada intento en `log_transacciones`:
+
+| Columna | Contenido |
+|---|---|
+| `id_log` | Autoincremental |
+| `fecha` | `DATETIME(3)` con la marca del intento |
+| `procedimiento` | `sp_registrar_venta` |
+| `nivel` | `INFO`, `WARN` o `ERROR` |
+| `mensaje` | Detalle del resultado o del error |
+
+En la corrida de prueba se generaron cuatro filas: una `INFO` con la venta exitosa (`pedido=80002 producto=10 cantidad=2 intentos=1`) y tres `ERROR` (`Stock insuficiente`, `Producto inexistente` y la violación de FK del cliente inexistente).
 
 ### 6.3 Simulación de deadlock
 
@@ -1099,27 +1196,27 @@ InnoDB detecta el ciclo de espera (A espera B, B espera A) y aborta una de las t
 
 ```
 SESIÓN A:                         SESIÓN B:
-  SET TRANSACTION ISOLATION       SET TRANSACTION ISOLATION
-  LEVEL REPEATABLE READ;          LEVEL REPEATABLE READ;
-  
-  START TRANSACTION;              START TRANSACTION;
-  
-  SELECT stock FROM producto      SELECT stock FROM producto
-  WHERE id_producto = 1;          WHERE id_producto = 1;
-    → Resultado: 50                 → Resultado: 50
-  
-                                   UPDATE producto SET
-                                   stock = stock - 10
-                                   WHERE id_producto = 1;
-                                   COMMIT;
-                                     → Stock ahora es 40
-  
-  SELECT stock FROM producto
-  WHERE id_producto = 1;
-    → Resultado: 50 (NO CAMBIA)
+  SET SESSION TRANSACTION           SET SESSION TRANSACTION
+  ISOLATION LEVEL                   ISOLATION LEVEL
+  REPEATABLE READ;                  REPEATABLE READ;
+
+  START TRANSACTION;                START TRANSACTION;
+
+  SELECT estado FROM pedido         SELECT estado FROM pedido
+  WHERE id_pedido = 1;              WHERE id_pedido = 1;
+    → ENTREGADO                       → ENTREGADO
+
+                                    UPDATE pedido SET
+                                    estado = 'CANCELADO'
+                                    WHERE id_pedido = 1;
+                                    COMMIT;
+                                      → estado ahora es CANCELADO
+
+  SELECT estado FROM pedido
+  WHERE id_pedido = 1;
+    → ENTREGADO (NO CAMBIA)
     → Snapshot de transacción
-    preserva el valor inicial
-  
+
   COMMIT;
 ```
 
@@ -1131,31 +1228,33 @@ SESIÓN A:                         SESIÓN B:
 
 ```
 SESIÓN A:                         SESIÓN B:
-  SET TRANSACTION ISOLATION       SET TRANSACTION ISOLATION
-  LEVEL READ COMMITTED;          LEVEL READ COMMITTED;
-  
-  START TRANSACTION;              START TRANSACTION;
-  
-  SELECT stock FROM producto      SELECT stock FROM producto
-  WHERE id_producto = 1;          WHERE id_producto = 1;
-    → Resultado: 50                 → Resultado: 50
-  
-                                   UPDATE producto SET
-                                   stock = stock - 10
-                                   WHERE id_producto = 1;
-                                   COMMIT;
-                                     → Stock ahora es 40
-  
-  SELECT stock FROM producto
-  WHERE id_producto = 1;
-    → Resultado: 40 (CAMBIA)
+  SET SESSION TRANSACTION           SET SESSION TRANSACTION
+  ISOLATION LEVEL                   ISOLATION LEVEL
+  READ COMMITTED;                   READ COMMITTED;
+
+  START TRANSACTION;                START TRANSACTION;
+
+  SELECT estado FROM pedido         SELECT estado FROM pedido
+  WHERE id_pedido = 1;              WHERE id_pedido = 1;
+    → ENTREGADO                       → ENTREGADO
+
+                                    UPDATE pedido SET
+                                    estado = 'CANCELADO'
+                                    WHERE id_pedido = 1;
+                                    COMMIT;
+                                      → estado ahora es CANCELADO
+
+  SELECT estado FROM pedido
+  WHERE id_pedido = 1;
+    → CANCELADO (CAMBIA)
     → Snapshot por sentencia
-    ve commits externos
-  
+
   COMMIT;
 ```
 
 **Comportamiento**: En READ COMMITTED, cada sentencia ve los commits realizados por otras transacciones. No hay snapshot persistente durante toda la transacción.
+
+Al finalizar la prueba se restaura el pedido 1 a `ENTREGADO`.
 
 ### 6.5 Conclusiones de concurrencia
 
@@ -1248,13 +1347,13 @@ Durante el desarrollo se consultaron tres asistentes de IA —Claude, ChatGPT y 
 
 **Consulta 1.** Se preguntó cuál es la forma más eficiente de generar alrededor de 345.000 filas en MySQL 8.0 a partir de un puñado de productos base, usando un CTE recursivo para armar una tabla de números y un producto cartesiano, y cómo evitar que esa operación consuma memoria en exceso.
 
-**Criterio adoptado.** Se implementó `WITH RECURSIVE DIGITOS` para generar los dígitos 0-9 y se combinaron con CROSS JOIN para obtener hasta 10.000 combinaciones. El producto cartesiano se acota con `LIMIT` y se ejecuta dentro de una única transacción, de modo que la carga es masiva pero controlada y reproducible.
+**Criterio adoptado.** Se adoptó una CTE recursiva para generar la serie 1..1000 y materializarla en la tabla `nums`, en lugar de generar los dígitos 0–9 y combinarlos con `CROSS JOIN`. Sobre `nums` se aplican productos cartesianos acotados (200 × 100 para clientes, 100 × 50 para productos y 400 × 200 para pedidos), sin `LIMIT` arbitrario. La tabla auxiliar se elimina al final del script.
 
 ![Consulta a ChatGPT sobre CTE recursivo y producto cartesiano](capturas/IA/ChatGPT1.jpeg)
 
 **Consulta 2.** Se preguntó cómo simular una distribución realista en la que el 75% de los clientes compre una sola vez y el 25% restante sea recurrente, usando una sola sentencia masiva con CTEs y funciones aleatorias.
 
-**Criterio adoptado.** La distribución se resolvió con funciones `MOD` y `CASE` sobre el identificador generado, en lugar de `RAND()`, para que la carga sea determinística y los conteos de verificación coincidan en cada ejecución. El sesgo se aplicó también a la asignación de productos por categoría.
+**Criterio adoptado.** La distribución se resolvió con funciones `MOD` y `CASE` sobre el identificador generado, en lugar de `RAND()`, para que la carga sea determinística y los conteos de verificación coincidan en cada ejecución. El 75% de los pedidos se asigna a los 20.000 clientes y el 25% a 2.000 clientes recurrentes; la categoría del producto se deriva con `1 + MOD(k * 3, 10)`.
 
 ![Consulta a ChatGPT sobre distribución sesgada de clientes](capturas/IA/ChatGPT2.jpeg)
 
@@ -1268,7 +1367,7 @@ Durante el desarrollo se consultaron tres asistentes de IA —Claude, ChatGPT y 
 
 **Consulta 2.** Se preguntó cuál es el método estándar para una carga masiva que garantice integridad transaccional sin perder velocidad: `LOAD DATA INFILE`, INSERT en lote o el CTE recursivo ya implementado.
 
-**Criterio adoptado.** Se mantuvo el INSERT masivo derivado del CTE dentro de `START TRANSACTION` / `COMMIT`, que resulta equivalente en atomicidad a las otras alternativas y no requiere archivos externos ni permisos adicionales. El mismo criterio transaccional se aplicó luego en `sp_registrar_venta`, con COMMIT y ROLLBACK según el resultado.
+**Criterio adoptado.** Se mantuvo el `INSERT ... SELECT` masivo derivado de la CTE, sin `LOAD DATA INFILE` ni archivos externos. La carga se ejecuta por bloques en autocommit y la consistencia se valida con las verificaciones V1–V5 del script. El criterio transaccional explícito se reservó para `sp_registrar_venta`, donde sí se usa `START TRANSACTION` / `COMMIT` / `ROLLBACK` porque cada venta debe ser atómica.
 
 ![Consulta a Gemini sobre carga masiva transaccional](capturas/IA/Gemini2.png)
 

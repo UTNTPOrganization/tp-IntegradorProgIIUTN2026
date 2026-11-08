@@ -1,0 +1,8 @@
+---
+description: Commit messages must not add Copilot co-author trailers
+alwaysApply: true
+---
+
+# Commit message trailers
+
+Never add `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` to a commit message. Do not add this trailer to new commits, amend it into existing commits, or retain it when rewriting commit history.

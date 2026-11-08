@@ -140,8 +140,13 @@ CSS = """
             background-color: #f5f5f5;
             padding: 0.5cm;
             border: 1px solid #ddd;
-            overflow-x: auto;
-            page-break-inside: avoid;
+            /* En PDF no hay scroll horizontal: las lineas largas se envuelven
+               para que el codigo completo quede visible. */
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            /* Los bloques largos (por ejemplo, el procedure completo) deben
+               poder continuar en la pagina siguiente en lugar de desbordar. */
+            page-break-inside: auto;
         }
 
         pre code {
